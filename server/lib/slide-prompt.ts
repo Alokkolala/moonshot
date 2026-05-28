@@ -6,38 +6,44 @@ export function buildSlidePrompt(
   brand: BrandConfig,
   deck: DeckOutline
 ): string {
-  const bullets = slide.keyPoints.map((p) => `• ${p}`).join('\n')
+  const content = slide.keyPoints.join('\n')
+  const isTitle = slide.type === 'title'
 
-  return `Create a stunning, professional presentation slide as a high-resolution image (1920x1080, 16:9 widescreen).
+  return `Create a single presentation slide as a high-resolution image. Render ONLY the slide — no browser chrome, device frame, shadow, or border outside the slide.
 
-SLIDE INFORMATION:
-- Deck: "${deck.deckTitle}" — ${deck.tagline}
-- Slide ${slide.index} of ${deck.totalSlides}: ${slide.title}
-- Type: ${slide.type}
-- Content:
-${bullets}
+Slide dimensions: 1920×1080px, 16:9 aspect ratio.
 
-BRAND DESIGN SYSTEM:
-- Company: ${brand.companyName}
-- Primary color: ${brand.primaryColor} (headlines, accents, CTAs)
-- Secondary color: ${brand.secondaryColor} (highlights, icons)
-- Background: ${brand.backgroundColor}
-- Text color: ${brand.textColor}
-- Font: ${brand.fontFamily}
-- Visual style: ${brand.styleKeywords.join(', ')}
-- Logo/identity: ${brand.logoDescription}
+---
 
-VISUAL DIRECTION:
+DESIGN BRIEF
 ${slide.visualDirection}
 
-DESIGN REQUIREMENTS:
-- Looks like it belongs in a $10M Series A investor deck
-- Clean, bold typography — headline prominent, body text readable
-- Strong visual hierarchy: headline → visual → supporting text
-- Use white space generously — never crowd the slide
-- Background must incorporate brand colors thoughtfully
-- Subtle geometric or abstract design elements reinforcing the brand
-- Text legible at presentation size — no tiny fonts
-- Visually striking — investors will glance for 3 seconds
-- Render the slide ONLY — no device mockups, browser chrome, or shadows`
+---
+
+CONTENT TO PLACE ON THIS SLIDE
+Deck: ${deck.deckTitle} — ${deck.tagline}
+Slide ${slide.index} of ${deck.totalSlides}
+Headline: ${slide.title}
+${content}
+
+---
+
+BRAND PALETTE & TYPOGRAPHY
+Background color: ${brand.backgroundColor}
+Primary accent: ${brand.primaryColor}
+Secondary accent: ${brand.secondaryColor}
+Text: ${brand.textColor}
+Typeface: ${brand.fontFamily}
+Company: ${brand.companyName}${brand.logoDescription ? `\nLogo: ${brand.logoDescription}` : ''}
+
+---
+
+DESIGN PRINCIPLES
+- Typography IS the design. Let the text breathe — massive headline, deliberate weight contrast between title and body.
+- One dominant visual idea per slide. Don't fill every zone.${isTitle ? '\n- Title slide: company name large and centered, tagline small below. One strong graphic element (abstract shape, gradient, or geometric mark) in the background.' : ''}
+- Generous white space. Padding of at least 10% on all edges.
+- Hierarchy: one thing the eye hits first, everything else supports it.
+- Color: background carries the brand atmosphere; accent used sparingly on ONE key element only.
+- No clipart, no stock photo feel, no decorative borders. Think Stripe, Linear, or Vercel's design language.
+- Every word on screen must earn its place. If a keyPoint is short, render it large.`
 }
