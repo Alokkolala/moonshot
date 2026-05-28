@@ -8,6 +8,10 @@ const PORT = process.env.PORT ?? 3001
 app.use(cors())
 app.use(express.json())
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
-app.listen(PORT, () =>
+const server = app.listen(PORT, () =>
   console.log(`Moonshot server running on http://localhost:${PORT}`)
 )
+server.on('error', (err: NodeJS.ErrnoException) => {
+  console.error('Server failed to start:', err.message)
+  process.exit(1)
+})
