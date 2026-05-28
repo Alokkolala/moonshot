@@ -10,9 +10,13 @@ function apiKey(): string {
   return key
 }
 
+export type ORContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 export interface ORMessage {
   role: 'user' | 'assistant' | 'system'
-  content: string
+  content: string | ORContentPart[]
 }
 
 /** Non-streaming text call — returns the assistant message content */

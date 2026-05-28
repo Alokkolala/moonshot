@@ -26,6 +26,7 @@ type Phase = 'chat' | 'outline-review' | 'generating' | 'done'
 interface DeckState {
   brand: BrandConfig
   messages: ChatMessage[]
+  referenceImages: string[]   // base64 data URLs attached by the user
   outline: DeckOutline | null
   slides: GeneratedSlide[]
   phase: Phase
@@ -35,6 +36,8 @@ interface DeckState {
 interface DeckActions {
   setBrand: (updates: Partial<BrandConfig>) => void
   addMessage: (msg: ChatMessage) => void
+  addReferenceImage: (dataUrl: string) => void
+  removeReferenceImage: (index: number) => void
   setOutline: (outline: DeckOutline) => void
   setPhase: (phase: Phase) => void
   setIsLoadingOutline: (loading: boolean) => void
@@ -51,6 +54,7 @@ interface DeckActions {
 export const useDeckStore = create<DeckState & DeckActions>()((set) => ({
   brand: defaultBrand(),
   messages: [],
+  referenceImages: [],
   outline: null,
   slides: [],
   phase: 'chat',
@@ -61,6 +65,12 @@ export const useDeckStore = create<DeckState & DeckActions>()((set) => ({
 
   addMessage: (msg) =>
     set((s) => ({ messages: [...s.messages, msg] })),
+
+  addReferenceImage: (dataUrl) =>
+    set((s) => ({ referenceImages: [...s.referenceImages, dataUrl] })),
+
+  removeReferenceImage: (index) =>
+    set((s) => ({ referenceImages: s.referenceImages.filter((_, i) => i !== index) })),
 
   setOutline: (outline) => set({ outline }),
 
@@ -97,6 +107,7 @@ export const useDeckStore = create<DeckState & DeckActions>()((set) => ({
     set({
       brand: defaultBrand(),
       messages: [],
+      referenceImages: [],
       outline: null,
       slides: [],
       phase: 'chat',

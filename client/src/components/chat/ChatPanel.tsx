@@ -12,9 +12,12 @@ export function ChatPanel() {
   const {
     brand,
     messages,
+    referenceImages,
     phase,
     isLoadingOutline,
     addMessage,
+    addReferenceImage,
+    removeReferenceImage,
     setOutline,
     setPhase,
     setIsLoadingOutline,
@@ -24,6 +27,18 @@ export function ChatPanel() {
   const [input, setInput] = useState('')
   const [showBrand, setShowBrand] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  function handleImageAttach(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    files.forEach((file) => {
+      const reader = new FileReader()
+      reader.onload = () => addReferenceImage(reader.result as string)
+      reader.readAsDataURL(file)
+    })
+    // Reset input so same file can be re-attached if needed
+    e.target.value = ''
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -81,7 +96,7 @@ export function ChatPanel() {
       const res = await fetch('/api/outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userDescription: latestMessage, brand, conversationContext }),
+        body: JSON.stringify({ userDescription: latestMessage, brand, conversationContext, referenceImages }),
       })
       const data = await res.json() as { outline?: DeckOutline; error?: string }
 
@@ -160,6 +175,24 @@ export function ChatPanel() {
 
       {/* Input */}
       <div className="px-4 py-3 border-t border-white/8 space-y-2">
+
+        {/* Reference image thumbnails */}
+        {referenceImages.length > 0 && (
+          <div className="flex gap-2 flex-wrap">
+            {referenceImages.map((url, i) => (
+              <div key={i} className="relative group w-14 h-14 rounded-lg overflow-hidden border border-white/10 shrink-0">
+                <img src={url} alt={`ref ${i + 1}`} className="w-full h-full object-cover" />
+                <button
+                  onClick={() => removeReferenceImage(i)}
+                  className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-lg"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <Textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -176,13 +209,37 @@ export function ChatPanel() {
           rows={3}
           className="bg-white/5 border-white/10 text-white placeholder:text-white/30 resize-none"
         />
-        <Button
-          onClick={() => void handleSend()}
-          disabled={!input.trim() || isDisabled || isLoadingOutline}
-          className="w-full bg-violet-600 hover:bg-violet-700 text-white"
-        >
-          {isLoadingOutline ? 'Generating outline...' : 'Send  ↵'}
-        </Button>
+
+        <div className="flex gap-2">
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleImageAttach}
+          />
+          {/* Attach button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isDisabled}
+            title="Attach reference images"
+            className="flex items-center justify-center w-10 h-10 rounded-lg border border-white/10 text-white/40 hover:text-white/70 hover:border-white/20 hover:bg-white/5 transition-colors disabled:opacity-30 shrink-0"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+
+          <Button
+            onClick={() => void handleSend()}
+            disabled={!input.trim() || isDisabled || isLoadingOutline}
+            className="flex-1 bg-violet-600 hover:bg-violet-700 text-white"
+          >
+            {isLoadingOutline ? 'Generating outline...' : 'Send  ↵'}
+          </Button>
+        </div>
       </div>
     </div>
   )
