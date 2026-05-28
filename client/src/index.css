@@ -46,6 +46,10 @@
 
 body {
   margin: 0;
+  font-family: Inter, system-ui, sans-serif;
+  background: #080810;
+  color: #ffffff;
+  -webkit-font-smoothing: antialiased;
 }
 
 @theme inline {
@@ -126,11 +130,21 @@ body {
 }
 
 @layer base {
-  * {
+  *, *::before, *::after {
+    box-sizing: border-box;
     @apply border-border outline-ring/50;
+  }
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
   }
   body {
     @apply bg-background text-foreground;
+    font-family: Inter, system-ui, sans-serif;
+    background: #080810;
+    color: #ffffff;
+    -webkit-font-smoothing: antialiased;
   }
   html {
     @apply font-sans;
