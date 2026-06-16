@@ -1,7 +1,8 @@
 import { config } from "./config";
-import { runCodexTurn, type CodexHandle } from "./codex";
+import { runCodexTurn, type CodexHandle, type SessionAsset } from "./codex";
 import { budgetExhausted } from "./usage";
 import {
+  downloadAttachment,
   insertEvent,
   setDeckThread,
   updateTurn,
@@ -19,6 +20,8 @@ export interface QueuedTurn {
   threadId: string | null;
   /** For slide turns: the outline slide this render belongs to. */
   outlineId?: string;
+  /** Brand assets (bucket keys) to fetch into the session before running. */
+  attachments?: { name: string; storagePath: string }[];
 }
 
 const queue: QueuedTurn[] = [];
@@ -75,8 +78,18 @@ async function runTurn(t: QueuedTurn) {
     });
   }
 
+  // Pull brand assets into memory so the session can read them as local files.
+  const assets: SessionAsset[] = [];
+  for (const a of t.attachments ?? []) {
+    try {
+      assets.push({ name: a.name, bytes: await downloadAttachment(a.storagePath) });
+    } catch {
+      /* a missing asset shouldn't sink the whole turn */
+    }
+  }
+
   const handle = runCodexTurn(
-    { prompt: t.prompt, threadId, directive: t.directive },
+    { prompt: t.prompt, threadId, directive: t.directive, assets },
     {
       onLine: (ev) => {
         void insertEvent({

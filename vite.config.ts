@@ -3,9 +3,8 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const host = process.env.TAURI_DEV_HOST;
-
-// https://vitejs.dev/config/
+// Web build (Vercel). The Tauri desktop config lived here previously; the app is
+// now a plain SPA served by Vercel and talking to Supabase + the Codex worker.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -13,21 +12,7 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
-  // Tauri expects a fixed port, fail if that port is not available
-  clearScreen: false,
   server: {
-    port: 1420,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
-      : undefined,
-    watch: {
-      ignored: ["**/src-tauri/**"],
-    },
+    port: 5173,
   },
 });

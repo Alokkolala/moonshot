@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Gauge, Coins, X, Eye } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { fetchUsage } from "@/lib/api";
 import type { CodexUsage, RateWindow } from "@/types";
 
 /** Blended price used to estimate spend from token counts. */
@@ -94,8 +94,8 @@ export function UsageMeter({ refreshKey, tokens }: Props) {
   };
 
   const refresh = useCallback(() => {
-    invoke<CodexUsage | null>("codex_usage")
-      .then((u) => setUsage(u))
+    fetchUsage()
+      .then((u) => setUsage(u as CodexUsage | null))
       .catch(() => setUsage(null));
   }, []);
 

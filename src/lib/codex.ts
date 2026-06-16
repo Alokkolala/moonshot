@@ -1,190 +1,127 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type {
-  CodexEvent,
-  CodexImagePayload,
-  CodexDonePayload,
-  CodexErrorPayload,
-  TurnUsage,
-} from "../types";
+import { supabase } from "./supabase";
+import { startTurn, type StartTurnArgs } from "./api";
+import type { CodexEvent } from "../types";
 
-export interface TurnHandlers {
-  onEvent: (event: CodexEvent) => void;
-  onImage: (image: CodexImagePayload) => void;
-  onDone: (done: CodexDonePayload) => void;
-  onError: (error: CodexErrorPayload) => void;
-}
+// Cloud replacement for the desktop Tauri Codex bridge. The browser enqueues a
+// turn on the worker, then watches the `turn_events` table (Supabase Realtime)
+// for that turn's streamed events — agent text, rendered images, completion.
+// The worker is the sole driver of Codex and the sole writer of turns/slides.
 
-/**
- * Run one Codex turn. Spawns (or resumes) a `codex exec --json` process in the
- * Rust backend, then streams its JSONL events, generated images, and completion
- * back through the provided handlers. Resolves once the turn is fully finished.
- *
- * `directive` is the instruction text prepended to the prompt (owned by the UI /
- * Settings) — a JSON-planner directive for outlines, an image directive for slides.
- */
-export async function runCodexTurn(
-  prompt: string,
-  threadId: string | null,
-  directive: string,
-  handlers: TurnHandlers
-): Promise<void> {
-  const unlisteners: UnlistenFn[] = [];
-  let settle: () => void;
-  const finished = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
-
-  const cleanup = async () => {
-    for (const u of unlisteners) {
-      try {
-        u();
-      } catch {
-        /* ignore */
-      }
-    }
-  };
-
-  unlisteners.push(
-    await listen<{ line: string }>("codex://event", (e) => {
-      const line = e.payload.line.trim();
-      if (!line) return;
-      try {
-        handlers.onEvent(JSON.parse(line) as CodexEvent);
-      } catch {
-        // Non-JSON line (stderr / banner) — surface as a raw event.
-        handlers.onEvent({ type: "raw", line } as CodexEvent);
-      }
-    })
-  );
-
-  unlisteners.push(
-    await listen<CodexImagePayload>("codex://image", (e) => {
-      handlers.onImage(e.payload);
-    })
-  );
-
-  unlisteners.push(
-    await listen<CodexErrorPayload>("codex://error", (e) => {
-      handlers.onError(e.payload);
-    })
-  );
-
-  unlisteners.push(
-    await listen<CodexDonePayload>("codex://done", (e) => {
-      handlers.onDone(e.payload);
-      void cleanup();
-      settle();
-    })
-  );
-
-  try {
-    await invoke("send_message", { prompt, threadId, directive });
-  } catch (err) {
-    handlers.onError({ message: String(err) });
-    await cleanup();
-    settle!();
-    return;
-  }
-
-  return finished;
-}
-
-export interface CollectedTurn {
-  /** Concatenated agent_message text emitted during the turn. */
+export interface CloudTurnResult {
+  turnId: string;
+  /** Concatenated agent_message text (the outline planner JSON lives here). */
   text: string;
-  /** Thread id captured from thread.started (null when resuming). */
+  /** Thread id captured from thread.started (null when resuming a thread). */
   threadId: string | null;
-  images: CodexImagePayload[];
+  /** Storage keys of any PNGs rendered during the turn. */
+  imagePaths: string[];
   error: string | null;
-  /** Token usage from `turn.completed`, if Codex reported it. */
-  usage: TurnUsage | null;
-  /** Wall-clock duration of the turn in milliseconds. */
-  durationMs: number;
 }
 
-/** Normalise Codex's usage object (snake/camel variants) into TurnUsage. */
-function readUsage(raw: Record<string, unknown> | undefined): TurnUsage | null {
-  if (!raw) return null;
-  const pick = (...keys: string[]): number => {
-    for (const k of keys) {
-      const v = raw[k];
-      if (typeof v === "number" && Number.isFinite(v)) return v;
-    }
-    return 0;
-  };
-  return {
-    inputTokens: pick("input_tokens", "inputTokens", "prompt_tokens"),
-    cachedInputTokens: pick(
-      "cached_input_tokens",
-      "cachedInputTokens",
-      "cache_read_input_tokens"
-    ),
-    outputTokens: pick("output_tokens", "outputTokens", "completion_tokens"),
-  };
-}
-
-export interface CollectHooks {
-  /** Receives every parsed event, for the dev console / status. */
+export interface CloudTurnHooks {
+  /** Fired once the turn is enqueued — gives the caller its id (for Stop). */
+  onStart?: (turnId: string) => void;
   onEvent?: (event: CodexEvent) => void;
-  onImage?: (image: CodexImagePayload) => void;
+  onImage?: (storagePath: string) => void;
+  onStatus?: (status: string) => void;
+}
+
+interface EventRow {
+  seq: number;
+  channel: string;
+  payload: Record<string, unknown>;
 }
 
 /**
- * Convenience wrapper that runs a turn and resolves with the aggregated result
- * (agent text, thread id, images, error) — used by the outline/slide flows while
- * still forwarding raw events to the dev console.
+ * Enqueue one Codex turn and resolve once it finishes (done/error). Streams the
+ * worker's events through the hooks as they arrive.
  */
-export async function collectCodexTurn(
-  prompt: string,
-  threadId: string | null,
-  directive: string,
-  hooks: CollectHooks = {}
-): Promise<CollectedTurn> {
-  let text = "";
-  let capturedThread: string | null = null;
-  const images: CodexImagePayload[] = [];
-  let error: string | null = null;
-  let usage: TurnUsage | null = null;
-  const startedAt = performance.now();
+export async function runCloudTurn(
+  args: StartTurnArgs,
+  hooks: CloudTurnHooks = {}
+): Promise<CloudTurnResult> {
+  const { turnId } = await startTurn(args);
+  hooks.onStart?.(turnId);
 
-  await runCodexTurn(prompt, threadId, directive, {
-    onEvent: (event) => {
-      hooks.onEvent?.(event);
-      if (event.type === "thread.started") {
-        const tid = (event as { thread_id?: string }).thread_id;
-        if (tid) capturedThread = tid;
-      } else if (event.type === "item.completed") {
-        const item = (event as { item?: { type?: string; text?: string } }).item;
-        if (item?.type === "agent_message" && item.text) {
-          text += (text ? "\n" : "") + item.text;
-        }
-      } else if (event.type === "turn.completed") {
-        const u = (event as { usage?: Record<string, unknown> }).usage;
-        const parsed = readUsage(u);
-        if (parsed) usage = parsed;
-      }
-    },
-    onImage: (image) => {
-      images.push(image);
-      hooks.onImage?.(image);
-    },
-    onError: (err) => {
-      error = err.message;
-    },
-    onDone: () => {
-      /* handled by runCodexTurn settle */
-    },
-  });
-
-  return {
-    text,
-    threadId: capturedThread,
-    images,
-    error,
-    usage,
-    durationMs: Math.round(performance.now() - startedAt),
+  const result: CloudTurnResult = {
+    turnId,
+    text: "",
+    threadId: null,
+    imagePaths: [],
+    error: null,
   };
+
+  const seen = new Set<number>();
+  let settle: (() => void) | null = null;
+  const finished = new Promise<void>((resolve) => (settle = resolve));
+
+  const apply = (row: EventRow): boolean => {
+    if (seen.has(row.seq)) return false;
+    seen.add(row.seq);
+    if (row.channel === "event") {
+      const ev = row.payload as CodexEvent;
+      hooks.onEvent?.(ev);
+      if (ev.type === "thread.started") {
+        const tid = (ev as { thread_id?: string }).thread_id;
+        if (tid) result.threadId = tid;
+      } else if (ev.type === "item.started") {
+        const t = (ev as { item?: { type?: string } }).item?.type;
+        if (t === "reasoning") hooks.onStatus?.("Reasoning…");
+        else if (t === "command_execution") hooks.onStatus?.("Working…");
+      } else if (ev.type === "item.completed") {
+        const item = (ev as { item?: { type?: string; text?: string } }).item;
+        if (item?.type === "agent_message" && item.text) {
+          result.text += (result.text ? "\n" : "") + item.text;
+        }
+      }
+    } else if (row.channel === "image") {
+      const path = (row.payload as { storage_path?: string }).storage_path;
+      if (path) {
+        result.imagePaths.push(path);
+        hooks.onImage?.(path);
+      }
+    } else if (row.channel === "error") {
+      result.error =
+        (row.payload as { message?: string }).message || "Codex error.";
+      return true; // terminal
+    } else if (row.channel === "done") {
+      return true; // terminal
+    }
+    return false;
+  };
+
+  const channel = supabase
+    .channel(`turn-${turnId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "turn_events",
+        filter: `turn_id=eq.${turnId}`,
+      },
+      (payload) => {
+        if (apply(payload.new as EventRow)) settle?.();
+      }
+    )
+    .subscribe(async (status) => {
+      if (status !== "SUBSCRIBED") return;
+      // Catch up on any events inserted before the subscription was live.
+      const { data } = await supabase
+        .from("turn_events")
+        .select("seq, channel, payload")
+        .eq("turn_id", turnId)
+        .order("seq", { ascending: true });
+      let terminal = false;
+      for (const row of (data as EventRow[] | null) ?? []) {
+        if (apply(row)) terminal = true;
+      }
+      if (terminal) settle?.();
+    });
+
+  await finished;
+  await supabase.removeChannel(channel);
+  return result;
 }
 
 /** Pull the first JSON object out of a Codex reply (tolerates fences/prose). */

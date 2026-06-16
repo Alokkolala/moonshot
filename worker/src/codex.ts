@@ -23,13 +23,25 @@ export interface CodexHandle {
  * orchestration safe to run for many users on one box. Mirrors the desktop
  * `run_turn`: spawn `codex exec --json`, stream events, watch generated_images.
  */
+export interface SessionAsset {
+  name: string;
+  bytes: Buffer;
+}
+
 export function runCodexTurn(
-  opts: { prompt: string; threadId?: string | null; directive: string },
+  opts: {
+    prompt: string;
+    threadId?: string | null;
+    directive: string;
+    /** Brand assets to drop into the session's `assets/` dir before running. */
+    assets?: SessionAsset[];
+  },
   cb: CodexCallbacks
 ): CodexHandle {
   // Per-session home isolates this user's images + session rollouts from others.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-"));
   seedAuth(home);
+  writeAssets(home, opts.assets ?? []);
   const imagesDir = path.join(home, "generated_images");
   fs.mkdirSync(imagesDir, { recursive: true });
   const seen = new Set<string>(); // fresh home → nothing seen yet
@@ -80,6 +92,21 @@ export function runCodexTurn(
   });
 
   return { kill: () => killTree(child) };
+}
+
+/** Write downloaded brand assets into `<home>/assets/<name>` (prompt-referenced). */
+function writeAssets(home: string, assets: SessionAsset[]) {
+  if (!assets.length) return;
+  const dir = path.join(home, "assets");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const a of assets) {
+    const safe = a.name.replace(/[\\/]/g, "_");
+    try {
+      fs.writeFileSync(path.join(dir, safe), a.bytes);
+    } catch {
+      /* skip a single bad asset rather than failing the whole turn */
+    }
+  }
 }
 
 /** Copy the shared auth (and config) into the session home so Codex is logged in. */

@@ -2,7 +2,7 @@
 
 // ---- App navigation ----
 
-export type View = "studio" | "insights" | "dev" | "settings";
+export type View = "studio" | "insights" | "admin" | "dev" | "settings";
 
 /** Product mode: pitch-deck builder (regular) or education builder (edu). */
 export type Mode = "moonshot" | "edu";

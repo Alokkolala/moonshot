@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Sparkles,
@@ -7,9 +6,10 @@ import {
   BarChart3,
   Terminal,
   Settings2,
+  Shield,
   Plus,
   Trash2,
-  Power,
+  LogOut,
   Loader2,
 } from "lucide-react";
 
@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import type { DeckStore } from "@/store";
 import type { Deck, Mode, View } from "@/types";
 import { UsageMeter } from "./UsageMeter";
+import { useAuth } from "@/auth/AuthContext";
 
 interface Props {
   view: View;
@@ -29,11 +30,13 @@ interface Props {
   generatingDeckId: string | null;
   status: string;
   onNewDeck: () => void;
+  isAdmin: boolean;
 }
 
-const NAV: { id: View; label: string; icon: typeof LayoutTemplate }[] = [
+const NAV: { id: View; label: string; icon: typeof LayoutTemplate; adminOnly?: boolean }[] = [
   { id: "studio", label: "Studio", icon: LayoutTemplate },
   { id: "insights", label: "Insights", icon: BarChart3 },
+  { id: "admin", label: "Admin", icon: Shield, adminOnly: true },
   { id: "dev", label: "Dev console", icon: Terminal },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
@@ -54,8 +57,10 @@ export function Sidebar({
   generatingDeckId,
   status,
   onNewDeck,
+  isAdmin,
 }: Props) {
   const edu = mode === "edu";
+  const { signOut } = useAuth();
   const visibleDecks = decks.decks.filter((d) => d.mode === mode);
 
   // Total tokens spent across every deck — feeds the usage meter's cost view.
@@ -129,7 +134,7 @@ export function Sidebar({
 
       {/* Nav */}
       <nav className="no-drag space-y-0.5 px-2.5 pt-2">
-        {NAV.map(({ id, label, icon: Icon }) => {
+        {NAV.filter((n) => !n.adminOnly || isAdmin).map(({ id, label, icon: Icon }) => {
           const activeNav = view === id;
           return (
             <button
@@ -242,12 +247,12 @@ export function Sidebar({
           </div>
           <button
             type="button"
-            onClick={() => invoke("quit_app")}
-            title="Stop everything & quit"
-            aria-label="Quit Moonshot"
+            onClick={() => void signOut()}
+            title="Sign out"
+            aria-label="Sign out"
             className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
           >
-            <Power className="size-4" strokeWidth={2.2} />
+            <LogOut className="size-4" strokeWidth={2.2} />
           </button>
         </div>
       </div>

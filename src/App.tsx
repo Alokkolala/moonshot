@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { Sidebar } from "./components/Sidebar";
@@ -9,11 +8,14 @@ import { SlideDeck } from "./components/studio/SlideDeck";
 import { DevConsole } from "./components/DevConsole";
 import { InsightsView } from "./components/InsightsView";
 import { SettingsView } from "./components/SettingsView";
+import { AdminView } from "./components/AdminView";
 
 import { useDecks, uid } from "./store";
 import { useSettings } from "./settings";
-import { collectCodexTurn, extractJson } from "./lib/codex";
+import { runCloudTurn, extractJson } from "./lib/codex";
+import { stopTurn } from "./lib/api";
 import { buildOutlinePrompt, buildSlidePrompt } from "./lib/prompts";
+import { useAuth } from "./auth/AuthContext";
 import type {
   Brand,
   CodexEvent,
@@ -22,12 +24,8 @@ import type {
   DevLogEntry,
   Mode,
   OutlineSlide,
-  TurnKind,
-  TurnRecord,
-  TurnUsage,
   View,
 } from "./types";
-import type { CollectedTurn } from "./lib/codex";
 
 interface OutlineReply {
   brand?: Brand;
@@ -39,45 +37,18 @@ const MAX_LOG = 600;
 /** Edu lessons go deeper on one topic — default to a fuller slide count. */
 const EDU_DEFAULT_SLIDES = 11;
 
-const ZERO_USAGE: TurnUsage = {
-  inputTokens: 0,
-  cachedInputTokens: 0,
-  outputTokens: 0,
-};
-
-/** Build a stats record from a collected turn. */
-function turnRecord(
-  kind: TurnKind,
-  label: string,
-  result: CollectedTurn,
-  ok: boolean
-): TurnRecord {
-  return {
-    id: uid(),
-    kind,
-    label,
-    ts: Date.now(),
-    durationMs: result.durationMs,
-    usage: result.usage ?? ZERO_USAGE,
-    ok,
-  };
-}
-
-/** Compact "1,234 tok · 3.2s" summary for a dev-log title. */
-function turnSummary(result: CollectedTurn): string {
-  const u = result.usage;
-  const tok = u ? u.inputTokens + u.outputTokens : 0;
-  const secs = (result.durationMs / 1000).toFixed(1);
-  return `${tok.toLocaleString()} tok · ${secs}s`;
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export default function App() {
   const decks = useDecks();
   const { settings, update: updateSettings, reset: resetSettings } = useSettings();
+  const { isAdmin } = useAuth();
   const { active } = decks;
 
   const [view, setView] = useState<View>("studio");
-  const [mode, setMode] = useState<Mode>(() => active?.mode ?? "moonshot");
+  const [mode, setMode] = useState<Mode>("moonshot");
   const [busy, setBusy] = useState(false);
 
   // Theme the whole document (body bg + tokens) by mode, with a cross-fade.
@@ -86,6 +57,12 @@ export default function App() {
     root.classList.add("mode-anim");
     root.classList.toggle("theme-edu", mode === "edu");
   }, [mode]);
+
+  // Follow the active deck's mode when switching decks.
+  useEffect(() => {
+    if (active?.mode) setMode(active.mode);
+  }, [active?.id, active?.mode]);
+
   const [status, setStatus] = useState("");
   const [generatingId, setGeneratingId] = useState<string | null>(null);
   /** Which deck currently owns the single in-flight Codex session (or null). */
@@ -98,32 +75,8 @@ export default function App() {
 
   // Set true to abort an in-flight generation loop (user pressed Stop).
   const cancelRef = useRef(false);
-
-  // Paths we've already rehydrated (or are fetching) — avoids re-reading on every render.
-  const rehydratedRef = useRef(new Set<string>());
-
-  // Rehydrate rendered slides after reload: data URLs aren't persisted, so a
-  // re-opened deck has done slides with a disk `path` but no `dataUrl` (they'd
-  // show as "Queued"). Read each PNG back off disk and patch its data URL in.
-  useEffect(() => {
-    if (!active) return;
-    for (const [slideId, slide] of Object.entries(active.slides)) {
-      if (slide.status !== "done" || slide.dataUrl || !slide.path) continue;
-      if (rehydratedRef.current.has(slide.path)) continue;
-      rehydratedRef.current.add(slide.path);
-      const path = slide.path;
-      const deckId = active.id;
-      invoke<string>("read_image", { path })
-        .then((dataUrl) => {
-          decks.updateDeck(deckId, (d) => {
-            const cur = d.slides[slideId];
-            if (!cur || cur.path !== path) return d;
-            return { ...d, slides: { ...d.slides, [slideId]: { ...cur, dataUrl } } };
-          });
-        })
-        .catch(() => rehydratedRef.current.delete(path));
-    }
-  }, [active, decks]);
+  // The worker turn id currently in flight, so Stop can target it.
+  const activeTurnRef = useRef<string | null>(null);
 
   const pushLog = useCallback(
     (channel: DevChannel, title: string, body?: string, deckId?: string) => {
@@ -139,13 +92,7 @@ export default function App() {
 
   const logEvent = useCallback(
     (event: CodexEvent, deckId: string) => {
-      if (event.type === "item.started") {
-        const t = (event as { item?: { type?: string } }).item?.type;
-        if (t === "reasoning") setStatus("Reasoning…");
-        else if (t === "command_execution") setStatus("Working…");
-      }
-      // Skip noisy reasoning deltas; log structural events only.
-      if (event.type === "item.updated") return;
+      if (event.type === "item.updated") return; // skip noisy reasoning deltas
       pushLog("event", event.type, JSON.stringify(event, null, 2), deckId);
     },
     [pushLog]
@@ -159,7 +106,7 @@ export default function App() {
     [active, decks]
   );
 
-  // ---- Outline generation (fresh Codex thread) ----
+  // ---- Outline generation (fresh Codex thread on the worker) ----
   const runOutline = useCallback(
     async (deck: Deck) => {
       if (busy) return;
@@ -179,9 +126,25 @@ export default function App() {
         deck.id
       );
 
-      const result = await collectCodexTurn(prompt, null, directive, {
-        onEvent: (e) => logEvent(e, deck.id),
-      });
+      let result;
+      try {
+        result = await runCloudTurn(
+          { deckId: deck.id, prompt, directive, kind: "outline", label: "Outline" },
+          {
+            onStart: (id) => (activeTurnRef.current = id),
+            onEvent: (e) => logEvent(e, deck.id),
+            onStatus: setStatus,
+          }
+        );
+      } catch (err) {
+        pushLog("error", "Couldn't start outline", errMessage(err), deck.id);
+        setStatus(errMessage(err));
+        setBusy(false);
+        setGeneratingDeckId(null);
+        activeTurnRef.current = null;
+        return;
+      }
+      activeTurnRef.current = null;
 
       if (cancelRef.current) {
         setStatus("Stopped.");
@@ -190,19 +153,11 @@ export default function App() {
         return;
       }
 
-      if (result.text)
-        pushLog("reply", "Outline reply", result.text, deck.id);
+      if (result.text) pushLog("reply", "Outline reply", result.text, deck.id);
       if (result.error) pushLog("error", "Codex error", result.error, deck.id);
 
       const parsed = extractJson<OutlineReply>(result.text);
-      const record = turnRecord(
-        "outline",
-        "Outline",
-        result,
-        !!parsed?.slides?.length
-      );
-      decks.updateDeck(deck.id, (d) => ({ ...d, stats: [...d.stats, record] }));
-      pushLog("done", `Outline turn · ${turnSummary(result)}`, undefined, deck.id);
+      pushLog("done", "Outline turn complete", undefined, deck.id);
 
       if (!parsed?.slides?.length) {
         pushLog(
@@ -217,12 +172,12 @@ export default function App() {
         return;
       }
 
-      const outline: OutlineSlide[] = parsed.slides.map((s) => ({
+      const outline: OutlineSlide[] = parsed.slides.map((sl) => ({
         id: uid(),
-        title: s.title?.trim() || "Untitled slide",
-        brief: s.brief?.trim() || "",
-        notes: s.notes?.trim() || "",
-        visual: s.visual?.trim() || "",
+        title: sl.title?.trim() || "Untitled slide",
+        brief: sl.brief?.trim() || "",
+        notes: sl.notes?.trim() || "",
+        visual: sl.visual?.trim() || "",
       }));
       const brand = parsed.brand ?? null;
       const title =
@@ -247,12 +202,13 @@ export default function App() {
     [busy, decks, logEvent, pushLog]
   );
 
-  // ---- Render a single slide (resumes the deck's thread for consistency) ----
+  // ---- Render a single slide (the worker resumes the deck's thread) ----
   const renderSlide = useCallback(
     async (deck: Deck, index: number) => {
       const slide = deck.outline[index];
       if (!slide) return;
       setGeneratingId(slide.id);
+      // Optimistic — Realtime will confirm/overwrite once the worker starts.
       decks.updateDeck(deck.id, (d) => ({
         ...d,
         slides: { ...d.slides, [slide.id]: { status: "generating" } },
@@ -269,52 +225,45 @@ export default function App() {
         deck.id
       );
 
-      const result = await collectCodexTurn(prompt, deck.threadId, directive, {
-        onEvent: (e) => logEvent(e, deck.id),
-        onImage: (img) =>
-          pushLog("image", `Rendered ${img.path}`, undefined, deck.id),
-      });
+      let result;
+      try {
+        result = await runCloudTurn(
+          {
+            deckId: deck.id,
+            prompt,
+            directive,
+            kind: "slide",
+            outlineId: slide.id,
+            label: slide.title || `Slide ${index + 1}`,
+          },
+          {
+            onStart: (id) => (activeTurnRef.current = id),
+            onEvent: (e) => logEvent(e, deck.id),
+            onImage: () => pushLog("image", `Rendered slide ${index + 1}`, undefined, deck.id),
+            onStatus: setStatus,
+          }
+        );
+      } catch (err) {
+        decks.updateDeck(deck.id, (d) => ({
+          ...d,
+          slides: { ...d.slides, [slide.id]: { status: "error", error: errMessage(err) } },
+        }));
+        pushLog("error", `Slide ${index + 1} failed to start`, errMessage(err), deck.id);
+        setGeneratingId(null);
+        activeTurnRef.current = null;
+        throw err; // let the loop stop
+      }
+      activeTurnRef.current = null;
 
-      // User stopped mid-render — drop this slide back to queued, no error card.
       if (cancelRef.current) {
-        decks.updateDeck(deck.id, (d) => {
-          const next = { ...d.slides };
-          delete next[slide.id];
-          return { ...d, slides: next };
-        });
         setGeneratingId(null);
         return;
       }
 
-      const img = result.images[result.images.length - 1];
-      const record = turnRecord(
-        "slide",
-        slide.title || `Slide ${index + 1}`,
-        result,
-        !!img
-      );
-      decks.updateDeck(deck.id, (d) => {
-        const next = { ...d.slides };
-        if (img) {
-          next[slide.id] = {
-            status: "done",
-            dataUrl: img.dataUrl,
-            path: img.path,
-            updatedAt: Date.now(),
-          };
-        } else {
-          next[slide.id] = {
-            status: "error",
-            error: result.error || "Codex produced no image.",
-          };
-        }
-        return { ...d, slides: next, stats: [...d.stats, record] };
-      });
-
       pushLog(
-        img ? "done" : "error",
-        `Slide ${index + 1} turn · ${turnSummary(result)}`,
-        img ? undefined : result.error || result.text || "No image produced.",
+        result.error ? "error" : "done",
+        `Slide ${index + 1} turn complete`,
+        result.error || undefined,
         deck.id
       );
       setGeneratingId(null);
@@ -329,7 +278,11 @@ export default function App() {
       setBusy(true);
       setGeneratingDeckId(deck.id);
       setStatus(`Rendering slide ${index + 1}…`);
-      await renderSlide(deck, index);
+      try {
+        await renderSlide(deck, index);
+      } catch {
+        /* surfaced in the slide card */
+      }
       setStatus(cancelRef.current ? "Stopped." : "");
       setBusy(false);
       setGeneratingDeckId(null);
@@ -346,7 +299,11 @@ export default function App() {
       for (let i = 0; i < deck.outline.length; i++) {
         if (cancelRef.current) break;
         setStatus(`Rendering slide ${i + 1} of ${deck.outline.length}…`);
-        await renderSlide(deck, i);
+        try {
+          await renderSlide(deck, i);
+        } catch {
+          break; // a hard failure (e.g. quota) — stop the run
+        }
       }
       setStatus(cancelRef.current ? "Stopped." : "");
       setBusy(false);
@@ -355,11 +312,12 @@ export default function App() {
     [busy, renderSlide]
   );
 
-  /** Stop the in-flight generation: kill the Codex process and abort the loop. */
+  /** Stop the in-flight generation: kill the worker turn and abort the loop. */
   const stopGeneration = useCallback(() => {
     cancelRef.current = true;
     setStatus("Stopping…");
-    invoke("stop_codex").catch(() => {});
+    const turnId = activeTurnRef.current;
+    if (turnId) stopTurn(turnId).catch(() => {});
   }, []);
 
   const newDeck = useCallback(() => {
@@ -446,10 +404,12 @@ export default function App() {
           generatingDeckId={generatingDeckId}
           status={status}
           onNewDeck={newDeck}
+          isAdmin={isAdmin}
         />
         <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           {view === "studio" && renderStudio()}
           {view === "insights" && <InsightsView deck={active ?? null} />}
+          {view === "admin" && isAdmin && <AdminView />}
           {view === "dev" && (
             <DevConsole entries={log} onClear={() => setLog([])} />
           )}

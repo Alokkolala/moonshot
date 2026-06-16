@@ -1,7 +1,4 @@
 import { useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { jsPDF } from "jspdf";
 import { motion } from "motion/react";
 import {
@@ -10,7 +7,6 @@ import {
   RefreshCw,
   Download,
   FileDown,
-  FolderOpen,
   Loader2,
   ImageOff,
   Square,
@@ -37,14 +33,31 @@ function slugify(title: string) {
   return title.replace(/[^\w-]+/g, "_").slice(0, 40) || "slide";
 }
 
-async function saveSlide(slide: GeneratedSlide, title: string) {
-  if (!slide.path) return;
-  const dest = await save({
-    title: "Save slide",
-    defaultPath: `${slugify(title)}.png`,
-    filters: [{ name: "PNG image", extensions: ["png"] }],
+/** Fetch a (signed-URL) image and convert it to a base64 data URL. */
+async function toDataUrl(url: string): Promise<string> {
+  const blob = await fetch(url).then((r) => r.blob());
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("image read failed"));
+    reader.readAsDataURL(blob);
   });
-  if (dest) await invoke("save_image_as", { src: slide.path, dest });
+}
+
+/** Trigger a browser download of a blob under the given filename. */
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function saveSlide(slide: GeneratedSlide, title: string) {
+  if (!slide.dataUrl) return;
+  const blob = await fetch(slide.dataUrl).then((r) => r.blob());
+  downloadBlob(blob, `${slugify(title)}.png`);
 }
 
 /** Natural pixel dimensions of an image data URL. */
@@ -57,18 +70,16 @@ function imageSize(dataUrl: string): Promise<{ w: number; h: number }> {
   });
 }
 
-/** Build a one-slide-per-page PDF from every rendered slide and save it to disk. */
+/** Build a one-slide-per-page PDF from every rendered slide and download it. */
 async function exportPdf(deck: Deck) {
   const done = deck.outline
     .map((o) => deck.slides[o.id])
-    .filter((s): s is GeneratedSlide => s?.status === "done" && !!s.path);
+    .filter((s): s is GeneratedSlide => s?.status === "done" && !!s.dataUrl);
   if (done.length === 0) return;
 
   let doc: jsPDF | null = null;
   for (const slide of done) {
-    // Rehydrate from disk if this slide's data URL isn't in memory.
-    const dataUrl =
-      slide.dataUrl ?? (await invoke<string>("read_image", { path: slide.path! }));
+    const dataUrl = await toDataUrl(slide.dataUrl!);
     const { w, h } = await imageSize(dataUrl);
     const orientation = w >= h ? "landscape" : "portrait";
     if (!doc) {
@@ -79,15 +90,7 @@ async function exportPdf(deck: Deck) {
     doc.addImage(dataUrl, "PNG", 0, 0, w, h);
   }
   if (!doc) return;
-
-  const dest = await save({
-    title: "Export deck as PDF",
-    defaultPath: `${slugify(deck.title)}.pdf`,
-    filters: [{ name: "PDF document", extensions: ["pdf"] }],
-  });
-  if (!dest) return;
-  const bytes = new Uint8Array(doc.output("arraybuffer"));
-  await invoke("write_file", { path: dest, bytes: Array.from(bytes) });
+  downloadBlob(doc.output("blob"), `${slugify(deck.title)}.pdf`);
 }
 
 export function SlideDeck({
@@ -319,21 +322,13 @@ function SlideTile({
       <div className="flex items-center justify-between gap-2 px-3.5 py-2.5">
         <p className="truncate text-sm font-medium">{outline.title}</p>
         <div className="flex shrink-0 items-center gap-0.5">
-          {slide?.status === "done" && slide.path && (
-            <>
-              <IconBtn
-                title="Save PNG"
-                onClick={() => void saveSlide(slide, outline.title)}
-              >
-                <Download className="size-4" />
-              </IconBtn>
-              <IconBtn
-                title="Reveal in folder"
-                onClick={() => slide.path && void revealItemInDir(slide.path)}
-              >
-                <FolderOpen className="size-4" />
-              </IconBtn>
-            </>
+          {slide?.status === "done" && slide.dataUrl && (
+            <IconBtn
+              title="Save PNG"
+              onClick={() => void saveSlide(slide, outline.title)}
+            >
+              <Download className="size-4" />
+            </IconBtn>
           )}
           <IconBtn
             title="Regenerate slide"

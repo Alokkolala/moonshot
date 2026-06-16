@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   Sparkles,
@@ -17,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { Attachment, Deck } from "@/types";
 import { uid } from "@/store";
+import { uploadAttachment } from "@/lib/api";
 
 interface Props {
   deck: Deck;
@@ -28,50 +28,35 @@ interface Props {
 
 const IMAGE_EXT = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"];
 
-function toAttachment(path: string): Attachment {
-  const name = path.split(/[\\/]/).pop() ?? path;
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  return {
-    id: uid(),
-    name,
-    path,
-    kind: IMAGE_EXT.includes(ext) ? "image" : "file",
-  };
-}
-
 export function BriefForm({ deck, busy, status, onChange, onGenerate }: Props) {
   const [picking, setPicking] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const edu = deck.mode === "edu";
 
-  const addFiles = async () => {
-    if (busy) return;
+  const onFilesPicked = async (files: FileList | null) => {
+    if (!files || !files.length || busy) return;
     setPicking(true);
     try {
-      const selected = await open({
-        multiple: true,
-        title: edu ? "Add source material" : "Add brand assets",
-        filters: [
-          {
-            name: edu ? "Source material" : "Brand assets",
-            extensions: [...IMAGE_EXT, "pdf", "txt", "md", "doc", "docx"],
-          },
-        ],
-      });
-      const paths = Array.isArray(selected)
-        ? selected
-        : selected
-          ? [selected]
-          : [];
-      if (paths.length) {
-        const existing = new Set(deck.attachments.map((a) => a.path));
-        const next = [
-          ...deck.attachments,
-          ...paths.filter((p) => !existing.has(p)).map(toAttachment),
-        ];
-        onChange({ attachments: next });
+      const uploaded: Attachment[] = [];
+      for (const file of Array.from(files)) {
+        try {
+          const { storagePath } = await uploadAttachment(deck.id, file);
+          const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+          uploaded.push({
+            id: uid(),
+            name: file.name,
+            path: storagePath,
+            kind: IMAGE_EXT.includes(ext) ? "image" : "file",
+          });
+        } catch {
+          /* skip the file that failed to upload */
+        }
       }
+      if (uploaded.length)
+        onChange({ attachments: [...deck.attachments, ...uploaded] });
     } finally {
       setPicking(false);
+      if (fileInput.current) fileInput.current.value = "";
     }
   };
 
@@ -150,16 +135,24 @@ export function BriefForm({ deck, busy, status, onChange, onGenerate }: Props) {
 
           <div className="flex items-center justify-between gap-3 px-1 pt-1.5">
             <div className="flex items-center gap-2">
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                accept={[...IMAGE_EXT.map((e) => `.${e}`), ".pdf", ".txt", ".md", ".doc", ".docx"].join(",")}
+                className="hidden"
+                onChange={(e) => void onFilesPicked(e.target.files)}
+              />
               <Button
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={addFiles}
+                onClick={() => fileInput.current?.click()}
                 disabled={busy || picking}
                 className="gap-1.5 rounded-lg"
               >
                 <Paperclip className="size-3.5" />
-                {edu ? "Add material" : "Add assets"}
+                {picking ? "Uploading…" : edu ? "Add material" : "Add assets"}
               </Button>
 
               <div className="flex items-center gap-1 rounded-lg border border-border bg-secondary/40 p-0.5">

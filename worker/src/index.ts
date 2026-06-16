@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { config } from "./config";
+import { bootstrapCodexAuth } from "./bootstrap";
 import { readCodexUsage } from "./usage";
 import { enqueue, queuePosition, stats, stop } from "./pool";
 import {
@@ -95,6 +96,13 @@ app.post("/decks/:deckId/turn", async (req: AuthedRequest, res: Response) => {
     threadId: deck.thread_id,
   });
 
+  // Brand assets the user uploaded for this deck (downloaded per-run by the pool).
+  const attachments = Array.isArray(deck.attachments)
+    ? (deck.attachments as { name?: string; storage_path?: string }[])
+        .filter((a) => a?.name && a?.storage_path)
+        .map((a) => ({ name: a.name as string, storagePath: a.storage_path as string }))
+    : [];
+
   enqueue({
     turnId: turn.id,
     deckId: deck.id,
@@ -104,6 +112,7 @@ app.post("/decks/:deckId/turn", async (req: AuthedRequest, res: Response) => {
     directive: typeof directive === "string" ? directive : "",
     threadId: deck.thread_id ?? null,
     outlineId: typeof outlineId === "string" ? outlineId : undefined,
+    attachments,
   });
 
   res.json({ turnId: turn.id, queuePosition: queuePosition(turn.id) });
@@ -126,6 +135,8 @@ app.get("/usage", (_req, res) => {
 app.get("/health", (_req, res) => {
   res.json({ ok: true, ...stats() });
 });
+
+bootstrapCodexAuth();
 
 app.listen(config.port, () => {
   console.log(`moonshot worker listening on :${config.port}`);

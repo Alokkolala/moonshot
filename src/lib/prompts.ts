@@ -155,13 +155,15 @@ export const DEFAULT_SETTINGS: Settings = {
   aspectRatio: "16:9",
 };
 
-/** Render the list of attachment paths for inclusion in a prompt. */
+/** Render the list of attachment paths for inclusion in a prompt. The worker
+ *  downloads each attachment into the session's `assets/` folder before the run,
+ *  so they are referenced by that relative path. */
 function attachmentBlock(deck: Deck): string {
   if (!deck.attachments.length) return "Brand assets: none provided.";
   const lines = deck.attachments
-    .map((a) => `- ${a.kind === "image" ? "image" : "file"}: ${a.path}`)
+    .map((a) => `- ${a.kind === "image" ? "image" : "file"}: assets/${a.name}`)
     .join("\n");
-  return `Brand assets (read these files from disk):\n${lines}`;
+  return `Brand assets (read these files from the working directory):\n${lines}`;
 }
 
 /** Build the user message for the outline turn. */

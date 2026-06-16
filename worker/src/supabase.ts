@@ -152,6 +152,13 @@ export async function uploadSlidePng(
   return key;
 }
 
+/** Download a user-uploaded brand asset from the private `attachments` bucket. */
+export async function downloadAttachment(storagePath: string): Promise<Buffer> {
+  const { data, error } = await db.storage.from("attachments").download(storagePath);
+  if (error || !data) throw error ?? new Error("attachment download failed");
+  return Buffer.from(await data.arrayBuffer());
+}
+
 export async function setDeckThread(deckId: string, threadId: string) {
   await db.from("decks").update({ thread_id: threadId }).eq("id", deckId);
 }
