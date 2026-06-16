@@ -1,0 +1,9 @@
+node_modules
+worker
+src-tauri
+scripts
+supabase
+dist
+*.tsbuildinfo
+.env
+.env.*
